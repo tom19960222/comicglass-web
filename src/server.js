@@ -4,7 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const fastifyStatic = require('fastify-static');
 const { CustomError } = require('./customError');
-const libraryPath = process.env.COMICGLASS_LIBRARY_ROOT ?? path.join(__dirname, '..', 'books');
+const libraryPath =
+  process.env.COMICGLASS_LIBRARY_ROOT ?? path.join(__dirname, '..', 'books');
 const allowedFileExtensions = [
   'gif',
   'png',
@@ -78,9 +79,9 @@ const createHTML = (file) => {
     : `<li>
       <a href="${encodeURIComponent(
         removeLibraryPath(file.path),
-      )}" booktitle="${encodeURIComponent(file.name)}" booksize="${
-        file.size
-      }" bookdate="${file.modifyTime}">${encodeURIComponent(file.name)}</a> 
+      )}" booktitle="${file.name}" booksize="${file.size}" bookdate="${
+        file.modifyTime
+      }">${file.name}</a> 
     </li>`;
 };
 
