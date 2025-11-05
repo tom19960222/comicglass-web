@@ -3,6 +3,7 @@ const _ = require('lodash');
 const fs = require('fs');
 const path = require('path');
 const fastifyStatic = require('fastify-static');
+const { ResponseItem, CacheItem } = require('./schema');
 const { CustomError } = require('./customError');
 const libraryPath =
   process.env.COMICGLASS_LIBRARY_ROOT ?? path.join(__dirname, '..', 'books');
@@ -33,8 +34,14 @@ const requestSchema = {
   },
 };
 
+const cachedDirectoryList = new Map();
+
 const listAllFilesInDirectory = async (pathToRead) => {
   try {
+    const dirMTime = (await fs.promises.stat(pathToRead)).mtimeMs;
+    if (cachedDirectoryList.has(pathToRead) && dirMTime <= cachedDirectoryList.get(pathToRead).mtimeMs) {
+      return cachedDirectoryList.get(pathToRead).files;
+    }
     const files = await fs.promises.readdir(pathToRead, {
       withFileTypes: true,
     });
@@ -50,14 +57,16 @@ const listAllFilesInDirectory = async (pathToRead) => {
       )
         continue;
 
-      result.push({
+      result.push(new ResponseItem({
         name: file.name,
         path: path.join(pathToRead, file.name),
         modifyTime: Math.floor(stats.mtimeMs / 1000),
         size: stats.size,
         type: stats.isDirectory() ? 'dir' : 'file',
-      });
+      }));
     }
+
+    cachedDirectoryList.set(pathToRead, new CacheItem(dirMTime, result));
     return result;
   } catch (err) {
     if (err.code === 'ENOENT') throw new CustomError('Path does not exist');
@@ -83,6 +92,12 @@ const createHTML = (file) => {
         file.modifyTime
       }">${file.name}</a> 
     </li>`;
+};
+
+const createInitialCache = async () => {
+  const dirMTime = (await fs.promises.stat(libraryPath)).mtimeMs;
+  const files = await listAllFilesInDirectory(libraryPath);
+  cachedDirectoryList.set(libraryPath, new CacheItem(dirMTime, files));
 };
 
 fastify.register(fastifyStatic, { root: libraryPath, prefix: '/' });
@@ -120,6 +135,17 @@ fastify.get('/', requestSchema, async (request, reply) => {
   }
 });
 
-fastify.listen(3000, '0.0.0.0', () => {
-  console.log('Server started on port 3000');
-});
+const main = () => {
+  console.log('Creating initial cache...');
+  createInitialCache().then(() => {
+    console.log('Initial cache created');
+  }).catch((err) => {
+    console.error(err);
+  });
+  console.log('Starting server...');
+  fastify.listen(3000, '0.0.0.0', () => {
+    console.log('Server started on port 3000');
+  });
+}
+
+main();
