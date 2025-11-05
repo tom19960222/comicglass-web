@@ -22,11 +22,11 @@ const allowedFileExtensions = [
   'cgt',
 ];
 
-// 缓存配置
-const CACHE_MAX_SIZE = 10000; // 最多缓存 10000 个目录
+// 快取設定
+const CACHE_MAX_SIZE = 10000; // 最多快取 10000 個目錄
 const directoryCache = new Map(); // { path: { files: [], mtime: number, lastAccess: number } }
 
-// LRU 缓存清理：当缓存超过限制时，删除最久未访问的条目
+// LRU 快取清理：當快取超過限制時，刪除最久未存取的項目
 const cleanupCache = () => {
   if (directoryCache.size <= CACHE_MAX_SIZE) return;
 
@@ -36,37 +36,37 @@ const cleanupCache = () => {
   const toDelete = entries.slice(0, directoryCache.size - CACHE_MAX_SIZE);
   toDelete.forEach(([key]) => directoryCache.delete(key));
 
-  console.log(`Cache cleanup: removed ${toDelete.length} entries`);
+  console.log(`快取清理: 移除 ${toDelete.length} 個項目`);
 };
 
-// 获取或更新缓存
+// 取得或更新快取
 const getCachedDirectoryListing = async (pathToRead) => {
   try {
-    // 获取目录的 mtime
+    // 取得目錄的 mtime
     const dirStat = await fs.promises.stat(pathToRead);
     const currentMtime = Math.floor(dirStat.mtimeMs);
 
-    // 检查缓存
+    // 檢查快取
     const cached = directoryCache.get(pathToRead);
     if (cached && cached.mtime === currentMtime) {
-      // 缓存命中且未过期
+      // 快取命中且未過期
       cached.lastAccess = Date.now();
-      console.log(`Cache hit: ${pathToRead}`);
+      console.log(`快取命中: ${pathToRead}`);
       return cached.files;
     }
 
-    // 缓存未命中或已过期，重新读取
-    console.log(`Cache miss: ${pathToRead}`);
+    // 快取未命中或已過期，重新讀取
+    console.log(`快取未命中: ${pathToRead}`);
     const files = await readDirectoryFiles(pathToRead);
 
-    // 更新缓存
+    // 更新快取
     directoryCache.set(pathToRead, {
       files,
       mtime: currentMtime,
       lastAccess: Date.now(),
     });
 
-    // 清理过期缓存
+    // 清理過期快取
     cleanupCache();
 
     return files;
@@ -76,7 +76,7 @@ const getCachedDirectoryListing = async (pathToRead) => {
   }
 };
 
-// 实际读取目录文件的函数
+// 實際讀取目錄檔案的函數
 const readDirectoryFiles = async (pathToRead) => {
   const files = await fs.promises.readdir(pathToRead, {
     withFileTypes: true,
@@ -102,6 +102,34 @@ const readDirectoryFiles = async (pathToRead) => {
     });
   }
   return result;
+};
+
+// 遞迴掃描所有子資料夾並預先載入快取
+const prewarmCache = async (dirPath, level = 0) => {
+  try {
+    // 讀取並快取當前目錄
+    await getCachedDirectoryListing(dirPath);
+
+    // 取得子資料夾列表
+    const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+    const subdirs = entries
+      .filter(entry => entry.isDirectory())
+      .map(entry => path.join(dirPath, entry.name));
+
+    // 非同步遞迴處理所有子資料夾
+    await Promise.all(
+      subdirs.map(subdir => prewarmCache(subdir, level + 1))
+    );
+
+    if (level === 0) {
+      console.log(`\n預載完成！已快取 ${directoryCache.size} 個目錄`);
+    }
+  } catch (err) {
+    // 忽略無法存取的目錄
+    if (err.code !== 'ENOENT' && err.code !== 'EACCES') {
+      console.error(`預載錯誤 (${dirPath}):`, err.message);
+    }
+  }
 };
 
 const requestSchema = {
@@ -137,7 +165,7 @@ const createHTML = (file) => {
 
 fastify.register(fastifyStatic, { root: libraryPath, prefix: '/' });
 
-// 缓存统计端点
+// 快取統計端點
 fastify.get('/cache-stats', async (request, reply) => {
   const stats = {
     size: directoryCache.size,
@@ -185,9 +213,20 @@ fastify.get('/', requestSchema, async (request, reply) => {
   }
 });
 
-fastify.listen(3000, '0.0.0.0', () => {
-  console.log('Server started on port 3000');
-  console.log(`Library path: ${libraryPath}`);
-  console.log(`Directory cache enabled (max size: ${CACHE_MAX_SIZE})`);
-  console.log(`Cache stats available at: http://localhost:3000/cache-stats`);
+fastify.listen(3000, '0.0.0.0', async () => {
+  console.log('伺服器已啟動於 port 3000');
+  console.log(`資料庫路徑: ${libraryPath}`);
+  console.log(`目錄快取已啟用 (最大容量: ${CACHE_MAX_SIZE})`);
+  console.log(`快取統計可於此查看: http://localhost:3000/cache-stats`);
+
+  // 啟動時預載所有資料夾到快取（非同步執行，不阻塞伺服器）
+  console.log('\n開始預載資料夾快取...');
+  const startTime = Date.now();
+
+  prewarmCache(libraryPath).then(() => {
+    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+    console.log(`快取預載耗時: ${duration} 秒`);
+  }).catch(err => {
+    console.error('快取預載失敗:', err.message);
+  });
 });
