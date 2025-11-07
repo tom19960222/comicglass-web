@@ -68,7 +68,6 @@ const listAllFilesInDirectory = async (pathToRead) => {
           path.extname(file.name).includes(ext),
         )
       ) return;
-      logger.info(`Cache missed for pathToRead=${pathToRead} end reading directory.`);
 
       return new ResponseItem({
         name: file.name,
@@ -79,6 +78,7 @@ const listAllFilesInDirectory = async (pathToRead) => {
       });
     });
       
+    logger.info(`Cache missed for pathToRead=${pathToRead} end reading directory.`);
     cachedDirectoryList.set(pathToRead, new CacheItem(dirMTime, result));
     return result;
   } catch (err) {
