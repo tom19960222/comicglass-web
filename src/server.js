@@ -45,29 +45,29 @@ const listAllFilesInDirectory = async (pathToRead) => {
     const files = await fs.promises.readdir(pathToRead, {
       withFileTypes: true,
     });
-    const result = await Promise.all(
-        files.map(file => fs.promises.stat(path.join(pathToRead, file.name)))
-      )
-      .then(stats => 
-        stats.map(stat => {
-          if (!stat.isFile() && !stat.isDirectory()) return;
-          if (
-            stat.isFile() &&
-            !allowedFileExtensions.some((ext) =>
-              path.extname(file.name).includes(ext),
-            )
-          ) return;
+    const stats = await Promise.all(
+      files.map(file => fs.promises.stat(path.join(pathToRead, file.name)))
+    );
+    const fileStats = [];
+    for(let i = 0; i < files.length; i++) { fileStats.push({file: files[i], stat: stats[i]}); }
+    const result = fileStats.map(({file, stat}) => {
+      if (!stat.isFile() && !stat.isDirectory()) return;
+      if (
+        stat.isFile() &&
+        !allowedFileExtensions.some((ext) =>
+          path.extname(file.name).includes(ext),
+        )
+      ) return;
 
-        return new ResponseItem({
-          name: file.name,
-          path: path.join(pathToRead, file.name),
-          modifyTime: Math.floor(stat.mtimeMs / 1000),
-          size: stat.size,
-          type: stat.isDirectory() ? 'dir' : 'file',
-        });
-        })
-      );
-
+      return new ResponseItem({
+        name: file.name,
+        path: path.join(pathToRead, file.name),
+        modifyTime: Math.floor(stat.mtimeMs / 1000),
+        size: stat.size,
+        type: stat.isDirectory() ? 'dir' : 'file',
+      });
+    });
+      
     cachedDirectoryList.set(pathToRead, new CacheItem(dirMTime, result));
     return result;
   } catch (err) {
