@@ -3,6 +3,7 @@ const _ = require('lodash');
 const fs = require('fs');
 const path = require('path');
 const fastifyStatic = require('fastify-static');
+const winston = require('winston');
 const { ResponseItem, CacheItem } = require('./schema');
 const { CustomError } = require('./customError');
 const libraryPath =
@@ -35,13 +36,22 @@ const requestSchema = {
 };
 
 const cachedDirectoryList = new Map();
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.json(),
+  transports: [
+    new winston.transports.Console(),
+  ],
+});
 
 const listAllFilesInDirectory = async (pathToRead) => {
   try {
     const dirMTime = (await fs.promises.stat(pathToRead)).mtimeMs;
     if (cachedDirectoryList.has(pathToRead) && dirMTime <= cachedDirectoryList.get(pathToRead).mtimeMs) {
+      logger.info(`pathToRead=${pathToRead} dirMTime=${dirMTime} cacheMTime=${cachedDirectoryList.get(pathToRead).mtimeMs} Returning cache.`);
       return cachedDirectoryList.get(pathToRead).files;
     }
+    logger.info(`Cache missed for pathToRead=${pathToRead} begin reading directory.`);
     const files = await fs.promises.readdir(pathToRead, {
       withFileTypes: true,
     });
@@ -58,6 +68,7 @@ const listAllFilesInDirectory = async (pathToRead) => {
           path.extname(file.name).includes(ext),
         )
       ) return;
+      logger.info(`Cache missed for pathToRead=${pathToRead} end reading directory.`);
 
       return new ResponseItem({
         name: file.name,
