@@ -45,26 +45,28 @@ const listAllFilesInDirectory = async (pathToRead) => {
     const files = await fs.promises.readdir(pathToRead, {
       withFileTypes: true,
     });
-    const result = [];
-    for (const file of files) {
-      const stats = await fs.promises.stat(path.join(pathToRead, file.name));
-      if (!stats.isFile() && !stats.isDirectory()) continue;
-      if (
-        stats.isFile() &&
-        !allowedFileExtensions.some((ext) =>
-          path.extname(file.name).includes(ext),
-        )
+    const result = await Promise.all(
+        files.map(file => fs.promises.stat(path.join(pathToRead, file.name)))
       )
-        continue;
+      .then(stats => 
+        stats.map(stat => {
+          if (!stat.isFile() && !stat.isDirectory()) return;
+          if (
+            stat.isFile() &&
+            !allowedFileExtensions.some((ext) =>
+              path.extname(file.name).includes(ext),
+            )
+          ) return;
 
-      result.push(new ResponseItem({
-        name: file.name,
-        path: path.join(pathToRead, file.name),
-        modifyTime: Math.floor(stats.mtimeMs / 1000),
-        size: stats.size,
-        type: stats.isDirectory() ? 'dir' : 'file',
-      }));
-    }
+        return new ResponseItem({
+          name: file.name,
+          path: path.join(pathToRead, file.name),
+          modifyTime: Math.floor(stat.mtimeMs / 1000),
+          size: stat.size,
+          type: stat.isDirectory() ? 'dir' : 'file',
+        });
+        })
+      );
 
     cachedDirectoryList.set(pathToRead, new CacheItem(dirMTime, result));
     return result;
@@ -95,9 +97,7 @@ const createHTML = (file) => {
 };
 
 const createInitialCache = async () => {
-  const dirMTime = (await fs.promises.stat(libraryPath)).mtimeMs;
-  const files = await listAllFilesInDirectory(libraryPath);
-  cachedDirectoryList.set(libraryPath, new CacheItem(dirMTime, files));
+  await listAllFilesInDirectory(libraryPath);
 };
 
 fastify.register(fastifyStatic, { root: libraryPath, prefix: '/' });
