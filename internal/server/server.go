@@ -37,7 +37,7 @@ func New() (*Server, error) {
 	}
 
 	engine.GET("/", srv.handleIndex)
-	engine.GET("/*filepath", srv.serveStaticFile)
+	engine.NoRoute(srv.serveStaticFile)
 
 	return srv, nil
 }
@@ -45,4 +45,3 @@ func New() (*Server, error) {
 func (s *Server) Run(addr string) error {
 	return s.engine.Run(addr)
 }
-

@@ -61,7 +61,7 @@ func (s *Server) handleIndex(c *gin.Context) {
 }
 
 func (s *Server) serveStaticFile(c *gin.Context) {
-	requested := strings.TrimPrefix(c.Param("filepath"), "/")
+	requested := strings.TrimPrefix(c.Request.URL.Path, "/")
 	if strings.TrimSpace(requested) == "" {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
