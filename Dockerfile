@@ -2,12 +2,8 @@ FROM golang:1.23 AS build
 
 WORKDIR /app
 
-COPY go.mod ./
-# go.sum may not exist yet; go mod download will create it when needed.
-RUN go mod download
-
-COPY cmd ./cmd
-COPY internal ./internal
+COPY . ./
+RUN go mod tidy
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /app/bin/comicglass ./cmd/comicglass
 
