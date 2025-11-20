@@ -22,6 +22,7 @@ const allowedFileExtensions = [
   'bmp',
   'pdf',
   'cgt',
+  'webp',
 ];
 
 const requestSchema = {
@@ -52,23 +53,29 @@ const logger = winston.createLogger({
   ],
 });
 
+const statPathWithCache = async (pathToRead) => {
+  if (cachedDirectoryList.has(pathToRead)) {
+    return cachedDirectoryList.get(pathToRead);
+  }
+
+  const result = await fs.promises.stat(pathToRead);
+  // 資料夾和檔案建了基本上就不會變動了
+  cachedDirectoryList.set(pathToRead, result);
+  return result;
+}
+
+
 const listAllFilesInDirectory = async (pathToRead) => {
   try {
-    const dirMTime = (await fs.promises.stat(pathToRead)).mtimeMs;
-    if (cachedDirectoryList.has(pathToRead) && dirMTime <= cachedDirectoryList.get(pathToRead).mtimeMs) {
-      logger.info(`pathToRead=${pathToRead} dirMTime=${dirMTime} cacheMTime=${cachedDirectoryList.get(pathToRead).mtimeMs} Returning cache.`);
-      return cachedDirectoryList.get(pathToRead).files;
-    }
-    logger.info(`Cache missed for pathToRead=${pathToRead} begin reading directory.`);
     const files = await fs.promises.readdir(pathToRead, {
       withFileTypes: true,
     });
     const stats = await Promise.all(
-      files.map(file => fs.promises.stat(path.join(pathToRead, file.name)))
+      files.map(file => statPathWithCache(path.join(pathToRead, file.name)))
     );
     const fileStats = [];
-    for(let i = 0; i < files.length; i++) { fileStats.push({file: files[i], stat: stats[i]}); }
-    const result = fileStats.map(({file, stat}) => {
+    for (let i = 0; i < files.length; i++) { fileStats.push({ file: files[i], stat: stats[i] }); }
+    const result = fileStats.map(({ file, stat }) => {
       if (!stat.isFile() && !stat.isDirectory()) return;
       if (
         stat.isFile() &&
@@ -85,9 +92,7 @@ const listAllFilesInDirectory = async (pathToRead) => {
         type: stat.isDirectory() ? 'dir' : 'file',
       });
     });
-      
-    logger.info(`Cache missed for pathToRead=${pathToRead} end reading directory.`);
-    cachedDirectoryList.set(pathToRead, new CacheItem(dirMTime, result));
+
     return result;
   } catch (err) {
     if (err.code === 'ENOENT') throw new CustomError('Path does not exist');
@@ -103,15 +108,14 @@ const createHTML = (file) => {
   return file.type === 'dir'
     ? `<li type="circle">
       <a href="?path=${encodeURIComponent(
-        removeLibraryPath(file.path),
-      )}" bookdate="${file.modifyTime}">${encodeURIComponent(file.name)}</a>
+      removeLibraryPath(file.path),
+    )}" bookdate="${file.modifyTime}">${encodeURIComponent(file.name)}</a>
     </li>`
     : `<li>
       <a href="${encodeURIComponent(
-        removeLibraryPath(file.path),
-      )}" booktitle="${file.name}" booksize="${file.size}" bookdate="${
-        file.modifyTime
-      }">${file.name}</a> 
+      removeLibraryPath(file.path),
+    )}" booktitle="${file.name}" booksize="${file.size}" bookdate="${file.modifyTime
+    }">${file.name}</a> 
     </li>`;
 };
 
