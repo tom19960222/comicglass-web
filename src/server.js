@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const fastifyStatic = require('fastify-static');
 const winston = require('winston');
+const { LRUCache } = require('lru-cache')
 const { ResponseItem, CacheItem } = require('./schema');
 const { CustomError } = require('./customError');
 const libraryPath =
@@ -36,7 +37,10 @@ const requestSchema = {
   },
 };
 
-const cachedDirectoryList = new Map();
+const cachedDirectoryList = new LRUCache({
+  max: 20000,
+});
+
 const logger = winston.createLogger({
   level: 'info',
   format: winston.format.combine(
