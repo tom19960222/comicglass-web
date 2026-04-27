@@ -14,6 +14,7 @@ const defaultResizedImageMaxEdge = Number.parseInt(
   process.env.COMICGLASS_RESIZED_IMAGE_MAX_EDGE ?? '1440',
   10,
 );
+const resizedRootPath = '/resized';
 const imageFileExtensions = [
   'gif',
   'png',
@@ -111,28 +112,82 @@ const listAllFilesInDirectory = async (pathToRead) => {
     throw err;
   }
 };
+
+const isImageFile = (fileName) => {
+  return imageFileExtensions.includes(path.extname(fileName).slice(1).toLowerCase());
+};
+
+const filterResizedListingFiles = (files) => {
+  return files.filter((file) => file && (file.type === 'dir' || isImageFile(file.name)));
+};
+
 const removeLibraryPath = (path, libraryPath) => {
   return path.replace(libraryPath, '');
 };
 
-const createHTML = (file, libraryPath) => {
+const createResizedPath = (libraryRelativePath) => {
+  return `${resizedRootPath}${libraryRelativePath}`.replace(/\.[^/.]+$/, '.webp');
+};
+
+const createResizedName = (name) => {
+  return name.replace(/\.[^/.]+$/, '.webp');
+};
+
+const createHTML = (file, libraryPath, { resizedListing = false } = {}) => {
   if (!['dir', 'file'].includes(file?.type)) return null;
+  const libraryRelativePath = removeLibraryPath(file.path, libraryPath);
+  const hrefPath = resizedListing
+    ? `${resizedRootPath}${libraryRelativePath}`
+    : libraryRelativePath;
+  const fileHrefPath = resizedListing
+    ? createResizedPath(libraryRelativePath)
+    : libraryRelativePath;
+  const fileName = resizedListing
+    ? createResizedName(file.name)
+    : file.name;
+
   return file.type === 'dir'
     ? `<li type="circle">
       <a href="?path=${encodeURIComponent(
-      removeLibraryPath(file.path, libraryPath),
+      hrefPath,
     )}" bookdate="${file.modifyTime}">${encodeURIComponent(file.name)}</a>
     </li>`
     : `<li>
       <a href="${encodeURIComponent(
-      removeLibraryPath(file.path, libraryPath),
-    )}" booktitle="${file.name}" booksize="${file.size}" bookdate="${file.modifyTime
-    }">${file.name}</a> 
+      fileHrefPath,
+    )}" booktitle="${fileName}" booksize="${file.size}" bookdate="${file.modifyTime
+    }">${fileName}</a>${' '}
     </li>`;
 };
 
 const createInitialCache = async (libraryPath) => {
   await listAllFilesInDirectory(libraryPath);
+};
+
+const createResizedRootItem = (libraryPath) => {
+  return new ResponseItem({
+    name: resizedRootPath.slice(1),
+    path: path.join(libraryPath, resizedRootPath),
+    modifyTime: 0,
+    size: 0,
+    type: 'dir',
+  });
+};
+
+const createListingContext = (libraryPath, requestedPath) => {
+  const normalizedPath = path.normalize(requestedPath ?? '');
+  const resizedListing =
+    normalizedPath === resizedRootPath ||
+    normalizedPath.startsWith(`${resizedRootPath}${path.sep}`);
+  const libraryListingPath = resizedListing
+    ? normalizedPath.slice(resizedRootPath.length)
+    : normalizedPath;
+
+  return {
+    normalizedPath,
+    resizedListing,
+    pathToRead: path.join(libraryPath, libraryListingPath),
+  };
 };
 
 const isInsideLibrary = (libraryPath, pathToCheck) => {
@@ -180,6 +235,23 @@ const createResizedImage = async (sourcePath, resizedImageMaxEdge) => {
     .toBuffer();
 };
 
+const sendResizedImage = async (reply, libraryPath, requestedPath, resizedImageMaxEdge) => {
+  try {
+    const sourcePath = await resolveResizedSourcePath(libraryPath, requestedPath);
+    const resizedImage = await createResizedImage(sourcePath, resizedImageMaxEdge);
+    reply.type('image/webp').header('Cache-Control', 'no-store').send(resizedImage);
+  } catch (err) {
+    if (err instanceof CustomError) reply.code(err.code ?? 400).send(err.message);
+    else reply.code(500).send(err.message);
+  }
+};
+
+const getEncodedLeadingSlashResizedPath = (rawUrl) => {
+  const decodedPath = decodeURIComponent(rawUrl.split('?')[0]);
+  if (!decodedPath.startsWith(`/${resizedRootPath}/`)) return null;
+  return decodedPath.slice(`/${resizedRootPath}/`.length);
+};
+
 const createServer = ({
   libraryPath = defaultLibraryPath,
   resizedImageMaxEdge = defaultResizedImageMaxEdge,
@@ -187,29 +259,44 @@ const createServer = ({
   const fastify = buildFastify({ logger: false });
 
   fastify.get('/resized/*', async (request, reply) => {
-    try {
-      const sourcePath = await resolveResizedSourcePath(libraryPath, request.params['*']);
-      const resizedImage = await createResizedImage(sourcePath, resizedImageMaxEdge);
-      reply.type('image/webp').header('Cache-Control', 'no-store').send(resizedImage);
-    } catch (err) {
-      if (err instanceof CustomError) reply.code(err.code ?? 400).send(err.message);
-      else reply.code(500).send(err.message);
-    }
+    await sendResizedImage(reply, libraryPath, request.params['*'], resizedImageMaxEdge);
   });
 
   fastify.register(fastifyStatic, { root: libraryPath, prefix: '/' });
 
+  fastify.setNotFoundHandler(async (request, reply) => {
+    const requestedPath = getEncodedLeadingSlashResizedPath(request.raw.url);
+    if (requestedPath === null) {
+      reply.code(404).send({
+        message: `Route ${request.method}:${request.raw.url} not found`,
+        error: 'Not Found',
+        statusCode: 404,
+      });
+      return;
+    }
+
+    await sendResizedImage(reply, libraryPath, requestedPath, resizedImageMaxEdge);
+  });
+
   fastify.get('/', requestSchema, async (request, reply) => {
     try {
-      const pathToRead = path.join(
+      const { normalizedPath, resizedListing, pathToRead } = createListingContext(
         libraryPath,
-        path.normalize(request.query.path ?? ''),
+        request.query.path,
       );
       const pathToShow = _.isEmpty(request.query.path)
         ? './'
-        : encodeURIComponent(path.normalize(request.query.path ?? ''));
+        : encodeURIComponent(normalizedPath);
       const files = await listAllFilesInDirectory(pathToRead);
-      const html = files.map((file) => createHTML(file, libraryPath)).join('');
+      const listingFiles = resizedListing
+        ? filterResizedListingFiles(files)
+        : files;
+      const filesToRender = _.isEmpty(request.query.path)
+        ? [createResizedRootItem(libraryPath), ...listingFiles]
+        : listingFiles;
+      const html = filesToRender.map((file) => createHTML(file, libraryPath, {
+        resizedListing,
+      })).join('');
       reply.type('text/html').send(`
       <!DOCTYPE html>
       <html>
