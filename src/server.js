@@ -1,29 +1,37 @@
-const fastify = require('fastify')({ logger: false });
+const buildFastify = require('fastify');
 const _ = require('lodash');
 const fs = require('fs');
 const path = require('path');
 const fastifyStatic = require('fastify-static');
+const sharp = require('sharp');
 const winston = require('winston');
 const { LRUCache } = require('lru-cache')
-const { ResponseItem, CacheItem } = require('./schema');
+const { ResponseItem } = require('./schema');
 const { CustomError } = require('./customError');
-const libraryPath =
+const defaultLibraryPath =
   process.env.COMICGLASS_LIBRARY_ROOT ?? path.join(__dirname, '..', 'books');
-const allowedFileExtensions = [
+const defaultResizedImageMaxEdge = Number.parseInt(
+  process.env.COMICGLASS_RESIZED_IMAGE_MAX_EDGE ?? '1440',
+  10,
+);
+const imageFileExtensions = [
   'gif',
   'png',
   'jpg',
   'jpeg',
   'tif',
   'tiff',
+  'bmp',
+  'webp',
+];
+const allowedFileExtensions = [
+  ...imageFileExtensions,
   'zip',
   'rar',
   'cbz',
   'cbr',
-  'bmp',
   'pdf',
   'cgt',
-  'webp',
 ];
 
 const requestSchema = {
@@ -103,44 +111,106 @@ const listAllFilesInDirectory = async (pathToRead) => {
     throw err;
   }
 };
-const removeLibraryPath = (path) => {
+const removeLibraryPath = (path, libraryPath) => {
   return path.replace(libraryPath, '');
 };
 
-const createHTML = (file) => {
+const createHTML = (file, libraryPath) => {
   if (!['dir', 'file'].includes(file?.type)) return null;
   return file.type === 'dir'
     ? `<li type="circle">
       <a href="?path=${encodeURIComponent(
-      removeLibraryPath(file.path),
+      removeLibraryPath(file.path, libraryPath),
     )}" bookdate="${file.modifyTime}">${encodeURIComponent(file.name)}</a>
     </li>`
     : `<li>
       <a href="${encodeURIComponent(
-      removeLibraryPath(file.path),
+      removeLibraryPath(file.path, libraryPath),
     )}" booktitle="${file.name}" booksize="${file.size}" bookdate="${file.modifyTime
     }">${file.name}</a> 
     </li>`;
 };
 
-const createInitialCache = async () => {
+const createInitialCache = async (libraryPath) => {
   await listAllFilesInDirectory(libraryPath);
 };
 
-fastify.register(fastifyStatic, { root: libraryPath, prefix: '/' });
+const isInsideLibrary = (libraryPath, pathToCheck) => {
+  const relativePath = path.relative(libraryPath, pathToCheck);
+  return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+};
 
-fastify.get('/', requestSchema, async (request, reply) => {
-  try {
-    const pathToRead = path.join(
-      libraryPath,
-      path.normalize(request.query.path ?? ''),
-    );
-    const pathToShow = _.isEmpty(request.query.path)
-      ? './'
-      : encodeURIComponent(path.normalize(request.query.path ?? ''));
-    const files = await listAllFilesInDirectory(pathToRead);
-    const html = files.map((file) => createHTML(file)).join('');
-    reply.type('text/html').send(`
+const resolveResizedSourcePath = async (libraryPath, requestedPath) => {
+  if (path.extname(requestedPath).toLowerCase() !== '.webp') {
+    throw new CustomError('Path does not exist', 404);
+  }
+
+  const sourcePathWithoutExtension = path.resolve(
+    libraryPath,
+    requestedPath.slice(0, -path.extname(requestedPath).length),
+  );
+
+  if (!isInsideLibrary(libraryPath, sourcePathWithoutExtension)) {
+    throw new CustomError('Path does not exist', 404);
+  }
+
+  for (const extension of imageFileExtensions) {
+    const sourcePath = `${sourcePathWithoutExtension}.${extension}`;
+    try {
+      const stat = await statPathWithCache(sourcePath);
+      if (stat.isFile()) return sourcePath;
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
+    }
+  }
+
+  throw new CustomError('Path does not exist', 404);
+};
+
+const createResizedImage = async (sourcePath, resizedImageMaxEdge) => {
+  return sharp(sourcePath)
+    .rotate()
+    .resize({
+      width: resizedImageMaxEdge,
+      height: resizedImageMaxEdge,
+      fit: 'inside',
+      withoutEnlargement: true,
+    })
+    .webp()
+    .toBuffer();
+};
+
+const createServer = ({
+  libraryPath = defaultLibraryPath,
+  resizedImageMaxEdge = defaultResizedImageMaxEdge,
+} = {}) => {
+  const fastify = buildFastify({ logger: false });
+
+  fastify.get('/resized/*', async (request, reply) => {
+    try {
+      const sourcePath = await resolveResizedSourcePath(libraryPath, request.params['*']);
+      const resizedImage = await createResizedImage(sourcePath, resizedImageMaxEdge);
+      reply.type('image/webp').header('Cache-Control', 'no-store').send(resizedImage);
+    } catch (err) {
+      if (err instanceof CustomError) reply.code(err.code ?? 400).send(err.message);
+      else reply.code(500).send(err.message);
+    }
+  });
+
+  fastify.register(fastifyStatic, { root: libraryPath, prefix: '/' });
+
+  fastify.get('/', requestSchema, async (request, reply) => {
+    try {
+      const pathToRead = path.join(
+        libraryPath,
+        path.normalize(request.query.path ?? ''),
+      );
+      const pathToShow = _.isEmpty(request.query.path)
+        ? './'
+        : encodeURIComponent(path.normalize(request.query.path ?? ''));
+      const files = await listAllFilesInDirectory(pathToRead);
+      const html = files.map((file) => createHTML(file, libraryPath)).join('');
+      reply.type('text/html').send(`
       <!DOCTYPE html>
       <html>
         <head>
@@ -155,24 +225,38 @@ fastify.get('/', requestSchema, async (request, reply) => {
         </body>
       </html>
     `);
-  } catch (err) {
-    console.error(err);
-    if (err instanceof CustomError) reply.code(400).send(err.message);
-    else reply.code(500).send(err.message);
-  }
-});
+    } catch (err) {
+      console.error(err);
+      if (err instanceof CustomError) reply.code(400).send(err.message);
+      else reply.code(500).send(err.message);
+    }
+  });
+
+  return fastify;
+};
 
 const main = () => {
+  const fastify = createServer();
   console.log('Creating initial cache...');
-  createInitialCache().then(() => {
+  createInitialCache(defaultLibraryPath).then(() => {
     console.log('Initial cache created');
   }).catch((err) => {
     console.error(err);
   });
   console.log('Starting server...');
-  fastify.listen(3000, '0.0.0.0', () => {
+  fastify.listen(3000, '0.0.0.0', (err) => {
+    if (err) {
+      console.error(err);
+      process.exit(1);
+    }
     console.log('Server started on port 3000');
   });
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  createServer,
+};
